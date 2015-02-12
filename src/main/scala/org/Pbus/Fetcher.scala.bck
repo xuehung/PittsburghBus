@@ -1,0 +1,133 @@
+package org.Pbus
+
+import org.Pbus.model._
+import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.HashMap
+import org.jsoup.Jsoup
+import org.jsoup.nodes._
+import org.jsoup.select._
+import org.json.JSONArray
+import org.json.JSONObject
+
+object Fetcher {
+  def getStops(stopMap: HashMap[Int, Stop], routeId: String, direction: String): List[Stop] = {
+    /* declare variables which will be returned */
+    var stopList = new ListBuffer[Stop]()
+
+    /* get the list of stops given the route id and direction */
+    val doc: Document = Jsoup.connect(getStopUrl(routeId, direction)).get();
+    val links: Elements = doc.select("li a");
+
+    for (index <- 0 until links.size()) {
+      val a: Element = links.get(index)
+      try {
+        val pattern1 = s"eta.jsp?route=$routeId&direction=$direction&id="
+        val pattern2 = "&showAllBusses=on"
+        val id: Integer = a.attr("href").replace(pattern1, "").replace(pattern2, "").toInt
+        val name: String = a.ownText()
+        val stop: Stop = stopMap.getOrElseUpdate(id, new Stop(id, name))
+        stop.addRoute(routeId)
+        stopList += stop
+        if (stopMap.get(id).get.name != name) {
+          println("[Error] conflicting stop name: "+stopMap.get(id).get.name+ s"and $name")
+        }
+      } catch {
+        /* there are some format error in the official web site */
+        case ex: Exception => {
+            println(a.attr("href"))
+            println(s"[Error] parsing route $routeId: "+ex.toString())
+         }
+      }
+    }
+    return stopList.toList
+  }
+  def getAllRoutes(): (HashMap[String, Route], HashMap[Int, Stop]) = {
+    /* declare variables which will be returned */
+    var routeMap = new HashMap[String, Route]()
+    var stopMap = new HashMap[Int, Stop]()
+
+    /* get all routes from the home page */
+    val doc: Document = Jsoup.connect(Config.HOME_URL).get();
+    val links: Elements = doc.select("li a");
+
+    for (index <- 0 until links.size()) {
+      /* process each route */
+      val a: Element = links.get(index)
+      val pattern = "selectdirection.jsp?route="
+      val id: String = a.attr("href").replace(pattern, "")
+      val name: String = a.ownText()
+      val inRoute = this.getStops(stopMap, id, Config.DIR_IN)
+      val outRoute = this.getStops(stopMap, id, Config.DIR_OUT);
+      val route: Route = new Route(id, name, inRoute, outRoute)
+      routeMap += route.id -> route
+
+      /* print log */
+      val inboundSize = route.inRoute.size
+      val outboundSize = route.outRoute.size
+      println(s"add route[$id] $name with in: $inboundSize stops and out: $outboundSize stops")
+    }
+    /* print log */
+    val routeNum = routeMap.size
+    val stopNum = stopMap.size
+    println(s"total $routeNum routes and $stopNum stops")
+    return (routeMap, stopMap)
+  }
+
+  def buildStopMap(routeList: List[Route]) = {
+    //val stopMap = scala.collection.mutable.Map[Int, Stop]()
+    val stopMap = new HashMap[Int, Stop]()
+    routeList.foreach { route =>
+      val stopList = route.inRoute
+      stopList.foreach { stop =>
+        if (!stopMap.contains(stop.id)) {
+          stopMap += stop.id -> stop
+        } else {
+          val s: Stop = stopMap.get(stop.id).get
+          if (s.name != stop.name) {
+            println("[Errror] Conflicting: "+s.name+","+stop.name)
+          }
+        }
+      }
+    }
+  }
+
+  def routeToJson(routeMap: HashMap[String, Route]): JSONArray = {
+    val array = new JSONArray()
+    for ((routeId, route) <- routeMap) {
+      val routeObj = new JSONObject()
+      val inArray = new JSONArray()
+      val outArray = new JSONArray()
+
+      for (stop <- route.inRoute) {
+        val stopObj = new JSONObject()
+        stopObj.put("stop_id", stop.id)
+        stopObj.put("stop_name", stop.name)
+        inArray.put(stopObj)
+      }
+      for (stop <- route.outRoute) {
+        val stopObj = new JSONObject()
+        stopObj.put("stop_id", stop.id)
+        stopObj.put("stop_name", stop.name)
+        outArray.put(stopObj)
+      }
+
+      routeObj.put("route_id", routeId)
+      routeObj.put("route_name", route.name)
+      routeObj.put("inbound", inArray)
+      routeObj.put("outbound", outArray)
+      array.put(routeObj)
+    }
+    return array
+  }
+
+  def getStopUrl(routeId: String, direction: String): String = {
+    return Config.SELECT_URL+ s"?route=$routeId&direction=$direction"
+  }
+
+
+  def main(args: Array[String]) {
+    val (routeMap, stopMap) = getAllRoutes
+    val routeJson = routeToJson(routeMap)
+    println(routeJson.toString())
+  }
+}
